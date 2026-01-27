@@ -462,54 +462,87 @@ class AdReportProcessor:
                     self.final_json['2_industry_benchmark'] = df_b.to_dict(orient='records')
                 except Exception as e: st.warning(f"大盘计算警告: {e}")
 
-        # 3. 受众组
-        self.doc.add_heading("3. 受众组分析", level=1)
-        self.final_json['3_audience_analysis'] = {}
-        audience_configs = [
-            ("3.1 国家分析", ["国家", "Country"], True, "国家"),
-            ("3.2 性别分析", ["性别", "Gender"], False, "性别"),
-            ("3.3 年龄分析", ["年龄", "Age"], False, "年龄段"),
-            ("3.4 受众组分析表", ["受众", "Audience"], True, "受众组名称"),
-        ]
+       # 3. 受众分析（拆分：受众组 + 受众类型）
+self.doc.add_heading("3. 受众分析", level=1)
+self.final_json['3_audience_analysis'] = {}
 
-        if "Master_Breakdown" in self.merged_dfs:
-            df_bd = self.merged_dfs["Master_Breakdown"]
-            for title, keywords, top10, dim_label in audience_configs:
-                mask = df_bd['Source_Sheet'].astype(str).apply(lambda x: any(k in x for k in keywords))
-                df_curr = df_bd[mask].copy()
-                if not df_curr.empty:
-                    if not find_column_fuzzy(df_curr, ['cpc']): df_curr['cpc'] = df_curr['spend'] / df_curr['clicks'].replace(0, np.nan) if 'clicks' in df_curr else 0
-                    if not find_column_fuzzy(df_curr, ['cpm']): df_curr['cpm'] = (df_curr['spend'] / df_curr['impressions'].replace(0, np.nan)) * 1000 if 'impressions' in df_curr else 0
-                    if not find_column_fuzzy(df_curr, ['ctr']): df_curr['ctr'] = df_curr['clicks'] / df_curr['impressions'].replace(0, np.nan) if 'impressions' in df_curr else 0
-                    if not find_column_fuzzy(df_curr, ['cpa']): df_curr['cpa'] = df_curr['spend'] / df_curr['purchases'].replace(0, np.nan) if 'purchases' in df_curr else 0
+def build_audience_table(df_curr, title, dim_label, top10=False, include_converting=False, level=2):
+    if df_curr.empty:
+        return
 
-                    req_cols = ["dimension_item", "spend", "ctr", "cpc", "cpm", "cpa", "roas"]
-                    if "受众" in title: req_cols += ["converting_countries", "converting_keywords", "converting_genders", "converting_ages"]
+    # 补算常用指标（如果缺失）
+    if 'clicks' in df_curr.columns and 'spend' in df_curr.columns and not find_column_fuzzy(df_curr, ['cpc']):
+        df_curr['cpc'] = df_curr['spend'] / df_curr['clicks'].replace(0, np.nan)
+    if 'impressions' in df_curr.columns and 'spend' in df_curr.columns and not find_column_fuzzy(df_curr, ['cpm']):
+        df_curr['cpm'] = (df_curr['spend'] / df_curr['impressions'].replace(0, np.nan)) * 1000
+    if 'impressions' in df_curr.columns and 'clicks' in df_curr.columns and not find_column_fuzzy(df_curr, ['ctr']):
+        df_curr['ctr'] = df_curr['clicks'] / df_curr['impressions'].replace(0, np.nan)
+    if 'purchases' in df_curr.columns and 'spend' in df_curr.columns and not find_column_fuzzy(df_curr, ['cpa']):
+        df_curr['cpa'] = df_curr['spend'] / df_curr['purchases'].replace(0, np.nan)
 
-                    rename_map = {}; valid_cols = []
-                    for req in req_cols:
-                        aliases = FIELD_ALIASES.get(req, [req])
-                        found = find_column_fuzzy(df_curr, aliases)
-                        if found: valid_cols.append(found); rename_map[found] = req
-                        else: 
-                            default_val = "-" if "converting" in req else 0.0
-                            df_curr[req] = default_val; valid_cols.append(req)
+    # 需要输出的列
+    req_cols = ["dimension_item", "spend", "ctr", "cpc", "cpm", "cpa", "roas"]
+    if include_converting:
+        req_cols += ["custom_audience_settings", "converting_countries", "converting_keywords", "converting_genders", "converting_ages"]
 
-                    df_final = df_curr[valid_cols].rename(columns=rename_map)
-                    
-                    text_columns_to_fix = ["converting_countries", "converting_keywords", "converting_genders", "converting_ages"]
-                    for t_col in text_columns_to_fix:
-                        if t_col in df_final.columns:
-                            df_final[t_col] = df_final[t_col].fillna("-").astype(str).replace("nan", "-")
-                            
-                    if "dimension_item" in df_final.columns:
-                         df_final = df_final[~df_final['dimension_item'].astype(str).str.lower().str.contains('unknow', na=False)]
+    rename_map = {}
+    valid_cols = []
+    for req in req_cols:
+        aliases = FIELD_ALIASES.get(req, [req])
+        found = find_column_fuzzy(df_curr, aliases)
+        if found:
+            valid_cols.append(found)
+            rename_map[found] = req
+        else:
+            default_val = "-" if ("converting" in req or req == "custom_audience_settings") else 0.0
+            df_curr[req] = default_val
+            valid_cols.append(req)
 
-                    if top10 and 'spend' in df_final.columns: df_final = df_final.sort_values('spend', ascending=False).head(10)
-                    df_clean = df_final.round(2)
-                    df_display = apply_report_labels(df_clean, custom_mapping={'dimension_item': dim_label})
-                    add_df_to_word(self.doc, df_display, title, level=2)
-                    self.final_json['3_audience_analysis'][title] = df_display.to_dict(orient='records')
+    df_final = df_curr[valid_cols].rename(columns=rename_map)
+
+    # 文本列清理
+    for t_col in ["custom_audience_settings", "converting_countries", "converting_keywords", "converting_genders", "converting_ages"]:
+        if t_col in df_final.columns:
+            df_final[t_col] = df_final[t_col].fillna("-").astype(str).replace("nan", "-")
+
+    # 过滤 unknow
+    if "dimension_item" in df_final.columns:
+        df_final = df_final[~df_final['dimension_item'].astype(str).str.lower().str.contains('unknow', na=False)]
+
+    # Top10
+    if top10 and 'spend' in df_final.columns:
+        df_final = df_final.sort_values('spend', ascending=False).head(10)
+
+    df_clean = df_final.round(2)
+    df_display = apply_report_labels(df_clean, custom_mapping={'dimension_item': dim_label})
+
+    add_df_to_word(self.doc, df_display, title, level=level)
+    self.final_json['3_audience_analysis'][title] = df_display.to_dict(orient='records')
+
+
+if "Master_Breakdown" in self.merged_dfs:
+    df_bd = self.merged_dfs["Master_Breakdown"]
+
+    # 3.1 国家
+    df_country = df_bd[df_bd["Source_Sheet"].astype(str) == "国家"].copy()
+    build_audience_table(df_country, "3.1 国家分析", "国家", top10=True, include_converting=False, level=2)
+
+    # 3.2 性别
+    df_gender = df_bd[df_bd["Source_Sheet"].astype(str) == "性别"].copy()
+    build_audience_table(df_gender, "3.2 性别分析", "性别", top10=False, include_converting=False, level=2)
+
+    # 3.3 年龄
+    df_age = df_bd[df_bd["Source_Sheet"].astype(str) == "年龄"].copy()
+    build_audience_table(df_age, "3.3 年龄分析", "年龄段", top10=False, include_converting=False, level=2)
+
+    # ✅ 3.4 受众组（单独表）
+    df_adset = df_bd[df_bd["Source_Sheet"].astype(str) == "受众组"].copy()
+    build_audience_table(df_adset, "3.4 受众组分析表", "受众组名称", top10=True, include_converting=True, level=2)
+
+    # ✅ 3.5 受众类型（单独表）
+    df_audtype = df_bd[df_bd["Source_Sheet"].astype(str) == "受众类型"].copy()
+    build_audience_table(df_audtype, "3.5 受众类型分析", "受众类型", top10=False, include_converting=False, level=2)
+
 
         # 4. 素材与落地页
         if "Master_Creative" in self.merged_dfs:
