@@ -475,10 +475,29 @@ class AdReportProcessor:
                 df_curr['cpc'] = df_curr['spend'] / df_curr['clicks'].replace(0, np.nan)
             if 'impressions' in df_curr.columns and 'spend' in df_curr.columns and not find_column_fuzzy(df_curr, ['cpm']):
                 df_curr['cpm'] = (df_curr['spend'] / df_curr['impressions'].replace(0, np.nan)) * 1000
-            if 'impressions' in df_curr.columns and 'clicks' in df_curr.columns and not find_column_fuzzy(df_curr, ['ctr']):
-                df_curr['ctr'] = df_curr['clicks'] / df_curr['impressions'].replace(0, np.nan)
-            if 'ctr' in df_curr.columns:
-                df_curr['ctr'] = df_curr['ctr'].fillna(0) * 100
+                # 如果没有 CTR 列，先计算 CTR（比例）
+                    # 如果没有 CTR 列，先计算 CTR（比例）
+                   # 如果没有 CTR 列，先计算 CTR（比例）
+            if not find_column_fuzzy(df_curr, ['ctr']):
+                if 'impressions' in df_curr.columns and 'clicks' in df_curr.columns:
+                    df_curr['ctr'] = df_curr['clicks'] / df_curr['impressions'].replace(0, np.nan)
+                else:
+                    df_curr['ctr'] = np.nan
+
+            # 如果同时有 cpc 和 cpm，但 ctr 为空或为 0，用反推公式补 CTR
+            if 'cpc' in df_curr.columns and 'cpm' in df_curr.columns:
+                mask_fix = (df_curr['ctr'].isna() | (df_curr['ctr'] == 0)) & (df_curr['cpc'] > 0)
+                if mask_fix.any():
+                    df_curr.loc[mask_fix, 'ctr'] = (
+                        df_curr.loc[mask_fix, 'cpm'] /
+                        (df_curr.loc[mask_fix, 'cpc'] * 1000)
+                    )
+
+            # ⭐ 关键点：这里把 CTR 转成「百分数数值」
+            df_curr['ctr'] = df_curr['ctr'].fillna(0) * 100
+
+
+
             if 'purchases' in df_curr.columns and 'spend' in df_curr.columns and not find_column_fuzzy(df_curr, ['cpa']):
                 df_curr['cpa'] = df_curr['spend'] / df_curr['purchases'].replace(0, np.nan)
 
