@@ -477,6 +477,7 @@ class AdReportProcessor:
                 df_curr['cpm'] = (df_curr['spend'] / df_curr['impressions'].replace(0, np.nan)) * 1000
             if 'impressions' in df_curr.columns and 'clicks' in df_curr.columns and not find_column_fuzzy(df_curr, ['ctr']):
                 df_curr['ctr'] = df_curr['clicks'] / df_curr['impressions'].replace(0, np.nan)
+            if 'ctr' in df_curr.columns:
                 df_curr['ctr'] = df_curr['ctr'].fillna(0) * 100
             if 'purchases' in df_curr.columns and 'spend' in df_curr.columns and not find_column_fuzzy(df_curr, ['cpa']):
                 df_curr['cpa'] = df_curr['spend'] / df_curr['purchases'].replace(0, np.nan)
