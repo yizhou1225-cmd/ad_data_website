@@ -428,7 +428,7 @@ class AdReportProcessor:
                     col_order = ["date_range", "spend", "roas", "cpa", "cpm", "cpc", "ctr", "cvr_purchase",
                                  "rate_click_to_lp", "rate_lp_to_atc", "rate_ic_to_pur", "aov", "add_to_cart", "purchases", "purchase_value"]
                     final_data = []
-                    for label, r in zip(["整体数据", "上周期值", "本周期", "环比"], [raw_overall, raw_prev, raw_curr, raw_mom]):
+                    for label, r in zip(["整体数据", "前半周期", "后半周期", "环比"], [raw_overall, raw_prev, raw_curr, raw_mom]):
                         row = {"Label": label}
                         is_m = (label == "环比")
                         for c in col_order: row[c] = format_cell(c, r.get(c, 0), is_mom=is_m)
