@@ -330,6 +330,27 @@ def add_df_to_word(doc, df, title, level=1):
                 for r in p.runs: r.font.size = Pt(8)
     doc.add_paragraph("\n")
 
+def json_safe(obj):
+    """
+    递归清理 JSON 数据：
+    - np.nan / inf / -inf → None
+    - 确保 json.dumps 输出严格 JSON
+    """
+    if isinstance(obj, float):
+        if np.isnan(obj) or np.isinf(obj):
+            return None
+        return obj
+
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+
+    if isinstance(obj, list):
+        return [json_safe(v) for v in obj]
+
+    return obj
+
+
+
 # ==========================================
 # PART 3: 主逻辑类
 # ==========================================
@@ -884,7 +905,8 @@ def main():
 
                 res_c1, res_c2, res_c3 = st.columns(3)
 
-                json_str = json.dumps(processor.final_json, indent=4, ensure_ascii=False)
+                safe_json = json_safe(processor.final_json)
+                json_str = json.dumps(safe_json, indent=4, ensure_ascii=False)
                 res_c1.download_button(
                     "📥 JSON (大模型分析)", 
                     json_str, 
