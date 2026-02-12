@@ -410,6 +410,49 @@ def normalize_v2_payload(v2):
 
     return v2
 
+def infer_column_types(columns):
+    """
+    基于列名推断类型：rate/money/count/text/mom/ratio
+    你可以按你自己的列名继续补充关键词。
+    """
+    types = {}
+    for c in columns:
+        name = str(c)
+
+        # 1) 文本列
+        if any(k in name for k in ["日期", "时段", "国家", "性别", "年龄", "受众", "版位", "素材", "落地页", "URL", "页面", "指标", "对比结论"]):
+            types[name] = "text"
+            continue
+
+        # 2) 环比 / MoM
+        if any(k in name for k in ["环比", "MoM", "mom"]):
+            types[name] = "mom"
+            continue
+
+        # 3) rate（百分比显示，JSON 存 0~1）
+        if any(k in name for k in ["CTR", "转化率", "CVR", "点击 →", "落地页 →", "购买转化率", "%"]):
+            types[name] = "rate"
+            continue
+
+        # 4) ROAS / ratio（不带%）
+        if "ROAS" in name:
+            types[name] = "ratio"
+            continue
+
+        # 5) money
+        if any(k in name for k in ["花费", "金额", "CPM", "CPC", "CPA", "客单价", "购买总价值", "($)"]):
+            types[name] = "money"
+            continue
+
+        # 6) count
+        if any(k in name for k in ["次数", "量", "数", "展现", "点击", "访问", "加购", "购买"]):
+            types[name] = "count"
+            continue
+
+        # 默认：text
+        types[name] = "text"
+
+    return types
 
 def json_safe(obj):
     """
@@ -453,9 +496,12 @@ def build_tables_and_plan(old_json: dict) -> dict:
             columns = list(rows[0].keys())
         else:
             columns = []
+        col_types = infer_column_types(columns)
+
         tables[table_id] = {
             "title": title,
             "columns": columns,
+            "column_types": col_types,   # ✅ 新增这一行
             "rows": rows
         }
 
