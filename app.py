@@ -719,8 +719,8 @@ class AdReportProcessor:
                         (df_curr.loc[mask_fix, 'cpc'] * 1000)
                     )
 
-            # ⭐ 关键点：这里把 CTR 转成「百分数数值」
-            df_curr['ctr'] = df_curr['ctr'].fillna(0) * 100
+            # ✅ 保持为比例 0~1
+            df_curr['ctr'] = df_curr['ctr'].fillna(0)
 
 
 
@@ -806,7 +806,7 @@ class AdReportProcessor:
                     if 'cpc' in df_curr.columns and 'cpm' in df_curr.columns:
                         mask_fix = (df_curr['ctr'].isna() | (df_curr['ctr'] == 0)) & (df_curr['cpc'] > 0)
                         if mask_fix.any(): df_curr.loc[mask_fix, 'ctr'] = df_curr.loc[mask_fix, 'cpm'] / (df_curr.loc[mask_fix, 'cpc'] * 1000)
-                    df_curr['ctr'] = df_curr['ctr'].fillna(0) * 100 
+                    df_curr['ctr'] = df_curr['ctr'].fillna(0)
 
                     req_cols = ["content_item", "spend", "ctr", "cpc", "cpm", "roas", "cpa"]
                     rename_map = {}; valid_cols = []
@@ -835,7 +835,7 @@ class AdReportProcessor:
                  if not find_column_fuzzy(df_curr, ['ctr']): df_curr['ctr'] = df_curr['clicks'] / df_curr['impressions'].replace(0, np.nan) if 'impressions' in df_curr else 0
                  if not find_column_fuzzy(df_curr, ['cpm']): df_curr['cpm'] = (df_curr['spend'] / df_curr['impressions'].replace(0, np.nan)) * 1000 if 'impressions' in df_curr else 0
                  if 'ctr' in df_curr.columns:
-                     df_curr['ctr'] = df_curr['ctr'].fillna(0) * 100
+                     df_curr['ctr'] = df_curr['ctr'].fillna(0)
                  req_cols = ['dimension_item', 'spend', 'ctr', 'cpc', 'cpm', 'roas', 'cpa']
                  rename_map = {}; valid_cols = []
                  for c in req_cols:
