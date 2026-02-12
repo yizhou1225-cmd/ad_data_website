@@ -419,19 +419,19 @@ def infer_column_types(columns):
     for c in columns:
         name = str(c)
 
-        # 1) 文本列
+        # 1) rate（百分比显示，JSON 存 0~1）
+        if any(k in name for k in ["CTR", "转化率", "CVR", "点击 →", "落地页 →", "购买转化率", "%"]):
+            types[name] = "rate"
+            continue
+            
+        # 2) 文本列
         if any(k in name for k in ["日期", "时段", "国家", "性别", "年龄", "受众", "版位", "素材", "落地页", "URL", "页面", "指标", "对比结论"]):
             types[name] = "text"
             continue
 
-        # 2) 环比 / MoM
+        # 3) 环比 / MoM
         if any(k in name for k in ["环比", "MoM", "mom"]):
             types[name] = "mom"
-            continue
-
-        # 3) rate（百分比显示，JSON 存 0~1）
-        if any(k in name for k in ["CTR", "转化率", "CVR", "点击 →", "落地页 →", "购买转化率", "%"]):
-            types[name] = "rate"
             continue
 
         # 4) ROAS / ratio（不带%）
@@ -504,6 +504,15 @@ def build_tables_and_plan(old_json: dict) -> dict:
             "column_types": col_types,   # ✅ 新增这一行
             "rows": rows
         }
+
+        if table_id == "t2_industry_benchmark":
+            # benchmark 是“指标驱动表”，单靠列名推断不准，直接固定类型
+            tables[table_id]["column_types"] = {
+                "指标": "text",
+                "当前账户": "number",
+                "行业基准": "number",
+                "对比结论": "text"
+            }
 
     # 1. 数据大盘总览
     if "1_data_overview" in old_json:
