@@ -349,6 +349,141 @@ def json_safe(obj):
 
     return obj
 
+def build_tables_and_plan(old_json: dict) -> dict:
+    """
+    把 processor.final_json（你现在的结构：章节key -> records）
+    转成 v2：
+      - report_meta
+      - tables: table_id -> {title, columns, rows}
+      - report_plan: sections/blocks（text 先留空，后续Day3让LLM填）
+    """
+    report_meta = {
+        "report_title": old_json.get("report_title", "广告投放深度分析报告"),
+        "generated_at": old_json.get("generated_at", pd.Timestamp.now().strftime("%Y-%m-%d"))
+    }
+
+    tables = {}
+    sections = []
+
+    def add_table(table_id: str, title: str, rows):
+        if rows is None:
+            return
+        if isinstance(rows, list) and len(rows) > 0 and isinstance(rows[0], dict):
+            columns = list(rows[0].keys())
+        else:
+            columns = []
+        tables[table_id] = {
+            "title": title,
+            "columns": columns,
+            "rows": rows
+        }
+
+    # 1. 数据大盘总览
+    if "1_data_overview" in old_json:
+        add_table("t1_data_overview", "1. 数据大盘总览", old_json["1_data_overview"])
+        sections.append({
+            "id": "overview",
+            "title": "1. 数据大盘总览",
+            "blocks": [
+                {"type": "text", "text": ""},  # Day3 接 LLM 后填
+                {"type": "table_ref", "table_id": "t1_data_overview"}
+            ]
+        })
+
+    # 2. Benchmark
+    if "2_industry_benchmark" in old_json:
+        add_table("t2_industry_benchmark", "2. 行业 Benchmark 对比", old_json["2_industry_benchmark"])
+        sections.append({
+            "id": "benchmark",
+            "title": "2. 行业 Benchmark 对比",
+            "blocks": [
+                {"type": "table_ref", "table_id": "t2_industry_benchmark"},
+                {"type": "text", "text": ""}
+            ]
+        })
+
+    # 3. 受众分析（old_json['3_audience_analysis'] 是 dict）
+    aud = old_json.get("3_audience_analysis", {})
+    if isinstance(aud, dict) and aud:
+        mapping = {
+            "3.1 国家分析": "t3_country",
+            "3.2 性别分析": "t4_gender",
+            "3.3 年龄分析": "t5_age",
+            "3.4 受众组分析表": "t6_adset",
+            "3.5 受众类型分析": "t7_audience_type"
+        }
+        blocks = [{"type": "text", "text": ""}]
+        for sub_title, rows in aud.items():
+            table_id = mapping.get(sub_title, f"t3_{sub_title.replace(' ', '').replace('.', '_')}")
+            add_table(table_id, sub_title, rows)
+            blocks.append({"type": "table_ref", "table_id": table_id})
+            blocks.append({"type": "text", "text": ""})
+
+        sections.append({
+            "id": "audience",
+            "title": "3. 受众分析",
+            "blocks": blocks
+        })
+
+    # 4. 素材
+    if "4_creative_analysis" in old_json:
+        add_table("t8_creatives", "4. 素材分析", old_json["4_creative_analysis"])
+        sections.append({
+            "id": "creative",
+            "title": "4. 素材分析",
+            "blocks": [
+                {"type": "text", "text": ""},
+                {"type": "table_ref", "table_id": "t8_creatives"}
+            ]
+        })
+
+    # 5. 版位分析
+    placement = old_json.get("5_placement_analysis", {})
+    if isinstance(placement, dict) and placement:
+        if "top_spend" in placement:
+            add_table("t9_placement_top_spend", "5.1 版位花费 TOP 5", placement["top_spend"])
+        if "high_potential" in placement:
+            add_table("t10_placement_high_potential", "5.2 版位高潜力", placement["high_potential"])
+        sections.append({
+            "id": "placement",
+            "title": "5. 版位分析",
+            "blocks": [
+                {"type": "text", "text": ""},
+                {"type": "table_ref", "table_id": "t9_placement_top_spend"},
+                {"type": "table_ref", "table_id": "t10_placement_high_potential"},
+                {"type": "text", "text": ""}
+            ]
+        })
+
+    # 6. 落地页
+    if "6_landing_page_analysis" in old_json:
+        add_table("t11_landing_pages", "6. 落地页分析", old_json["6_landing_page_analysis"])
+        sections.append({
+            "id": "landing",
+            "title": "6. 落地页分析",
+            "blocks": [
+                {"type": "text", "text": ""},
+                {"type": "table_ref", "table_id": "t11_landing_pages"}
+            ]
+        })
+
+    # 7. 架构
+    if "7_structure_analysis" in old_json:
+        add_table("t12_structure", "7. 广告架构分析", old_json["7_structure_analysis"])
+        sections.append({
+            "id": "structure",
+            "title": "7. 广告架构分析",
+            "blocks": [
+                {"type": "table_ref", "table_id": "t12_structure"},
+                {"type": "text", "text": ""}
+            ]
+        })
+
+    return {
+        "report_meta": report_meta,
+        "tables": tables,
+        "report_plan": {"sections": sections}
+    }
 
 
 # ==========================================
@@ -885,6 +1020,14 @@ def main():
             
             st.balloons() 
             
+            # 构建 v2 JSON
+            v2_payload = build_tables_and_plan(processor.final_json)
+            v2_payload = json_safe(v2_payload)
+
+            # 👇 这里加预览
+            with st.expander("🔍 预览 v2 JSON（tables + report_plan）", expanded=False):
+                st.json(v2_payload)
+            
             st.markdown("### 📥 下载结果文件")
             
             with st.container(border=True):
@@ -905,8 +1048,8 @@ def main():
 
                 res_c1, res_c2, res_c3 = st.columns(3)
 
-                safe_json = json_safe(processor.final_json)
-                json_str = json.dumps(safe_json, indent=4, ensure_ascii=False)
+                json_str = json.dumps(v2_payload, indent=4, ensure_ascii=False)
+
                 res_c1.download_button(
                     "📥 JSON (大模型分析)", 
                     json_str, 
