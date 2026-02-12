@@ -94,7 +94,7 @@ GROUP_CONFIG = {
 
 REPORT_MAPPING = {
     "spend": "花费 ($)", "roas": "ROAS", "purchases": "购买次数", "purchase_value": "购买总价值",
-    "cpa": "CPA ($)", "ctr": "CTR (%)", "cpm": "CPM ($)", "aov": "客单价",
+    "cpa": "CPA ($)", "ctr": "CTR (%)", "cpm": "CPM ($)", "cpc": "CPC ($)", "aov": "客单价",
     "impressions": "展现量", "clicks_all": "点击量 (All)", "clicks": "点击量 (All)", "ctr_all": "点击率 (All)",
     "landing_page_views": "落地页访问量", "add_to_cart": "加购次数", "initiate_checkout": "结账发起数 (IC)",
     "rate_click_to_lp": "点击 → 落地页访问转化率", "rate_lp_to_atc": "落地页 → 加购转化率",
@@ -699,18 +699,35 @@ class AdReportProcessor:
 
                     col_order = ["date_range", "spend", "roas", "cpa", "cpm", "cpc", "ctr", "cvr_purchase",
                                  "rate_click_to_lp", "rate_lp_to_atc", "rate_ic_to_pur", "aov", "add_to_cart", "purchases", "purchase_value"]
-                    final_data = []
+                    final_data_raw = []
                     for label, r in zip(["整体数据", "前半周期", "后半周期", "环比"], [raw_overall, raw_prev, raw_curr, raw_mom]):
                         row = {"Label": label}
                         is_m = (label == "环比")
-                        for c in col_order: row[c] = format_cell(c, r.get(c, 0), is_mom=is_m)
-                        row['date_range'] = label
-                        final_data.append(row)
+                        for c in col_order:
+                            row[c] = r.get(c, 0.0)
+                        row["date_range"] = label
+                        final_data_raw.append(row)
 
-                    df_f = pd.DataFrame(final_data, columns=col_order)
-                    df_f_display = apply_report_labels(df_f)
-                    add_df_to_word(self.doc, df_f_display, "1. 数据大盘总览", level=1)
-                    self.final_json['1_data_overview'] = df_f_display.to_dict(orient='records')
+                    df_raw = pd.DataFrame(final_data_raw, columns=col_order)
+
+                    # Word 展示版本
+                    df_disp = df_raw.copy()
+                    for c in col_order:
+                        if c == "date_range":
+                            continue
+                        is_mom_row = (df_disp["date_range"] == "环比")
+                        df_disp.loc[~is_mom_row, c] = df_disp.loc[~is_mom_row, c].apply(
+                            lambda v: format_cell(c, v, is_mom=False)
+                        )
+                        df_disp.loc[is_mom_row, c] = df_disp.loc[is_mom_row, c].apply(
+                            lambda v: format_cell(c, v, is_mom=True)
+                        )
+
+                    df_disp = apply_report_labels(df_disp)
+                    add_df_to_word(self.doc, df_disp, "1. 数据大盘总览", level=1)
+
+                    self.final_json["1_data_overview"] = apply_report_labels(df_raw).to_dict(orient="records")
+
 
                     # 2. Benchmark
                     raw_current = calc_metrics_dict(df_clean)
