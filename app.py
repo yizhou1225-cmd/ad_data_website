@@ -467,17 +467,6 @@ def build_tables_and_plan(old_json: dict) -> dict:
             ]
         })
 
-    # 7. 架构
-    if "7_structure_analysis" in old_json:
-        add_table("t12_structure", "7. 广告架构分析", old_json["7_structure_analysis"])
-        sections.append({
-            "id": "structure",
-            "title": "7. 广告架构分析",
-            "blocks": [
-                {"type": "table_ref", "table_id": "t12_structure"},
-                {"type": "text", "text": ""}
-            ]
-        })
 
     return {
         "report_meta": report_meta,
@@ -789,41 +778,6 @@ class AdReportProcessor:
                      "high_potential": apply_report_labels(df_pot, {'dimension_item': '版位'}).to_dict('records')
                  }
 
-        # 7. 架构诊断
-        rows = []
-        if "Master_Overview" in self.merged_dfs:
-             metrics = calc_metrics_dict(self.merged_dfs["Master_Overview"])
-             if not metrics: metrics = {} 
-             rows.append({
-                "模块": "预算结构", 
-                "当前结构数据表现": (
-                    f"总花费: ${float(str(metrics.get('spend', 0)).replace(',', '')):,.2f}\n"
-                    f"CPA: ${float(str(metrics.get('cpa', 0)).replace(',', '')):.2f}\n"
-                    f"ROAS: {float(str(metrics.get('roas', 0)).replace(',', '')):.2f}"
-                ), 
-                "存在的问题": ""
-             })
-        if "Master_Breakdown" in self.merged_dfs:
-            df_bd = self.merged_dfs["Master_Breakdown"]
-            mask = df_bd['Source_Sheet'].astype(str).apply(lambda x: any(k in x for k in ["受众", "Audience"]))
-            df_aud = df_bd[mask]
-            s_col = find_column_fuzzy(df_aud, ['spend']); active_count = len(df_aud[df_aud[s_col] > 0]) if s_col else 0
-            top_share = "0%"
-            if not df_aud.empty and s_col:
-                total_s = df_aud[s_col].sum()
-                if total_s > 0: top_share = f"{df_aud[s_col].max()/total_s:.1%}"
-            rows.append({"模块": "受众结构", "当前结构数据表现": f"活跃受众组数: {active_count}\nTop1 花费占比: {top_share}", "存在的问题": ""})
-        if "Master_Creative" in self.merged_dfs:
-             df_cr = self.merged_dfs["Master_Creative"]
-             mask = df_cr['Source_Sheet'].astype(str).apply(lambda x: any(k in x for k in ["素材", "Creative"]))
-             df_mat = df_cr[mask]
-             s_col = find_column_fuzzy(df_mat, ['spend']); active_count = len(df_mat[df_mat[s_col] > 0]) if s_col else 0
-             rows.append({"模块": "素材结构", "当前结构数据表现": f"活跃素材数: {active_count}", "存在的问题": ""})
-
-        df_struct = pd.DataFrame(rows)
-        add_df_to_word(self.doc, df_struct, "7. 广告架构分析", level=1)
-        if "Master_Overview" in self.merged_dfs:
-             self.final_json['7_structure_analysis'] = df_struct.to_dict(orient='records')
 
 # ==========================================
 # PART 4: Streamlit UI
