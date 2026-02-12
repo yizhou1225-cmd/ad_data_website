@@ -330,6 +330,87 @@ def add_df_to_word(doc, df, title, level=1):
                 for r in p.runs: r.font.size = Pt(8)
     doc.add_paragraph("\n")
 
+import re
+
+def _to_number_maybe(x):
+    """把 '4,226.45' / '2.45%' / '+1.29%' 这类字符串转成 number。
+    规则：
+    - 百分号：转成 ratio（2.45% -> 0.0245）
+    - 纯数字（含逗号/货币符号）：转 float
+    - 其他：原样返回
+    """
+    if x is None:
+        return None
+    if isinstance(x, (int, float)) and not (np.isnan(x) or np.isinf(x)):
+        return float(x)
+
+    if not isinstance(x, str):
+        return x
+
+    s = x.strip()
+    if s == "" or s.lower() == "nan":
+        return None
+
+    # 去掉货币符号与千分位
+    s2 = s.replace(",", "").replace("$", "").replace("¥", "")
+
+    # 百分比：+1.29% / -44.40% / 2.45%
+    if s2.endswith("%"):
+        try:
+            return float(s2[:-1]) / 100.0
+        except:
+            return x
+
+    # 普通数字
+    if re.fullmatch(r"[+-]?\d+(\.\d+)?", s2):
+        try:
+            return float(s2)
+        except:
+            return x
+
+    return x
+
+
+def normalize_v2_payload(v2):
+    """统一：
+    1) 表格 rows 数值化（尤其 t1_data_overview）
+    2) cpc 字段改名为 'CPC ($)'，并同步 columns 与 rows keys
+    3) benchmark 的 '指标'：把 'CPC' 改成 'CPC ($)'
+    """
+    tables = v2.get("tables", {})
+    for table_id, t in tables.items():
+        cols = t.get("columns", [])
+        rows = t.get("rows", [])
+
+        # 2) 统一 cpc 列名：cpc -> CPC ($)
+        if "cpc" in cols:
+            cols = ["CPC ($)" if c == "cpc" else c for c in cols]
+            t["columns"] = cols
+
+        # rows：逐 cell 数值化 + key 改名
+        new_rows = []
+        for r in rows:
+            if not isinstance(r, dict):
+                new_rows.append(r)
+                continue
+
+            rr = {}
+            for k, val in r.items():
+                kk = "CPC ($)" if k == "cpc" else k
+                rr[kk] = _to_number_maybe(val)
+            new_rows.append(rr)
+
+        t["rows"] = new_rows
+
+        # 额外：benchmark 的指标值对齐
+        if table_id == "t2_industry_benchmark":
+            for rr in t["rows"]:
+                if isinstance(rr, dict) and rr.get("指标") == "CPC":
+                    rr["指标"] = "CPC ($)"
+
+    return v2
+
+
 def json_safe(obj):
     """
     递归清理 JSON 数据：
@@ -977,6 +1058,9 @@ def main():
             # 构建 v2 JSON
             v2_payload = build_tables_and_plan(processor.final_json)
             v2_payload = json_safe(v2_payload)
+            
+            # ✅ 统一规范化：数值化 + 命名对齐
+            v2_payload = normalize_v2_payload(v2_payload)
 
             # 👇 这里加预览
             with st.expander("🔍 预览 v2 JSON（tables + report_plan）", expanded=False):
