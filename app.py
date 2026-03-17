@@ -94,7 +94,7 @@ GROUP_CONFIG = {
 
 REPORT_MAPPING = {
     "spend": "花费 ($)", "roas": "ROAS", "purchases": "购买次数", "purchase_value": "购买总价值",
-    "cpa": "CPA ($)", "ctr": "CTR (%)", "cpm": "CPM ($)", "aov": "客单价",
+    "cpa": "CPA ($)", "ctr": "CTR (%)", "cpm": "CPM ($)", "cpc": "CPC ($)", "aov": "客单价",
     "impressions": "展现量", "clicks_all": "点击量 (All)", "clicks": "点击量 (All)", "ctr_all": "点击率 (All)",
     "landing_page_views": "落地页访问量", "add_to_cart": "加购次数", "initiate_checkout": "结账发起数 (IC)",
     "rate_click_to_lp": "点击 → 落地页访问转化率", "rate_lp_to_atc": "落地页 → 加购转化率",
@@ -330,6 +330,287 @@ def add_df_to_word(doc, df, title, level=1):
                 for r in p.runs: r.font.size = Pt(8)
     doc.add_paragraph("\n")
 
+import re
+
+def _to_number_maybe(x):
+    """把 '4,226.45' / '2.45%' / '+1.29%' 这类字符串转成 number。
+    规则：
+    - 百分号：转成 ratio（2.45% -> 0.0245）
+    - 纯数字（含逗号/货币符号）：转 float
+    - 其他：原样返回
+    """
+    if x is None:
+        return None
+    if isinstance(x, (int, float)) and not (np.isnan(x) or np.isinf(x)):
+        return float(x)
+
+    if not isinstance(x, str):
+        return x
+
+    s = x.strip()
+    if s == "" or s.lower() == "nan":
+        return None
+
+    # 去掉货币符号与千分位
+    s2 = s.replace(",", "").replace("$", "").replace("¥", "")
+
+    # 百分比：+1.29% / -44.40% / 2.45%
+    if s2.endswith("%"):
+        try:
+            return float(s2[:-1]) / 100.0
+        except:
+            return x
+
+    # 普通数字
+    if re.fullmatch(r"[+-]?\d+(\.\d+)?", s2):
+        try:
+            return float(s2)
+        except:
+            return x
+
+    return x
+
+
+def normalize_v2_payload(v2):
+    """统一：
+    1) 表格 rows 数值化（尤其 t1_data_overview）
+    2) cpc 字段改名为 'CPC ($)'，并同步 columns 与 rows keys
+    3) benchmark 的 '指标'：把 'CPC' 改成 'CPC ($)'
+    """
+    tables = v2.get("tables", {})
+    for table_id, t in tables.items():
+        cols = t.get("columns", [])
+        rows = t.get("rows", [])
+
+        # 2) 统一 cpc 列名：cpc -> CPC ($)
+        if "cpc" in cols:
+            cols = ["CPC ($)" if c == "cpc" else c for c in cols]
+            t["columns"] = cols
+
+        # rows：逐 cell 数值化 + key 改名
+        new_rows = []
+        for r in rows:
+            if not isinstance(r, dict):
+                new_rows.append(r)
+                continue
+
+            rr = {}
+            for k, val in r.items():
+                kk = "CPC ($)" if k == "cpc" else k
+                rr[kk] = _to_number_maybe(val)
+            new_rows.append(rr)
+
+        t["rows"] = new_rows
+
+        # 额外：benchmark 的指标值对齐
+        if table_id == "t2_industry_benchmark":
+            for rr in t["rows"]:
+                if isinstance(rr, dict) and rr.get("指标") == "CPC":
+                    rr["指标"] = "CPC ($)"
+
+    return v2
+
+def infer_column_types(columns):
+    """
+    基于列名推断类型：rate/money/count/text/mom/ratio
+    你可以按你自己的列名继续补充关键词。
+    """
+    types = {}
+    for c in columns:
+        name = str(c)
+
+        # 1) rate（百分比显示，JSON 存 0~1）
+        if any(k in name for k in ["CTR", "转化率", "CVR", "点击 →", "落地页 →", "购买转化率", "%"]):
+            types[name] = "rate"
+            continue
+            
+        # 2) 文本列
+        if any(k in name for k in ["日期", "时段", "国家", "性别", "年龄", "受众", "版位", "素材", "落地页", "URL", "页面", "指标", "对比结论"]):
+            types[name] = "text"
+            continue
+
+        # 3) 环比 / MoM
+        if any(k in name for k in ["环比", "MoM", "mom"]):
+            types[name] = "mom"
+            continue
+
+        # 4) ROAS / ratio（不带%）
+        if "ROAS" in name:
+            types[name] = "ratio"
+            continue
+
+        # 5) money
+        if any(k in name for k in ["花费", "金额", "CPM", "CPC", "CPA", "客单价", "购买总价值", "($)"]):
+            types[name] = "money"
+            continue
+
+        # 6) count
+        if any(k in name for k in ["次数", "量", "数", "展现", "点击", "访问", "加购", "购买"]):
+            types[name] = "count"
+            continue
+
+        # 默认：text
+        types[name] = "text"
+
+    return types
+
+def json_safe(obj):
+    """
+    递归清理 JSON 数据：
+    - np.nan / inf / -inf → None
+    - 确保 json.dumps 输出严格 JSON
+    """
+    if isinstance(obj, float):
+        if np.isnan(obj) or np.isinf(obj):
+            return None
+        return obj
+
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+
+    if isinstance(obj, list):
+        return [json_safe(v) for v in obj]
+
+    return obj
+
+def build_tables_and_plan(old_json: dict) -> dict:
+    """
+    把 processor.final_json（你现在的结构：章节key -> records）
+    转成 v2：
+      - report_meta
+      - tables: table_id -> {title, columns, rows}
+      - report_plan: sections/blocks（text 先留空，后续Day3让LLM填）
+    """
+    report_meta = {
+        "report_title": old_json.get("report_title", "广告投放深度分析报告"),
+        "generated_at": old_json.get("generated_at", pd.Timestamp.now().strftime("%Y-%m-%d"))
+    }
+
+    tables = {}
+    sections = []
+
+    def add_table(table_id: str, title: str, rows):
+        if rows is None:
+            return
+        if isinstance(rows, list) and len(rows) > 0 and isinstance(rows[0], dict):
+            columns = list(rows[0].keys())
+        else:
+            columns = []
+        col_types = infer_column_types(columns)
+
+        tables[table_id] = {
+            "title": title,
+            "columns": columns,
+            "column_types": col_types,   # ✅ 新增这一行
+            "rows": rows
+        }
+
+        if table_id == "t2_industry_benchmark":
+            # benchmark 是“指标驱动表”，单靠列名推断不准，直接固定类型
+            tables[table_id]["column_types"] = {
+                "指标": "text",
+                "当前账户": "number",
+                "行业基准": "number",
+                "对比结论": "text"
+            }
+
+    # 1. 数据大盘总览
+    if "1_data_overview" in old_json:
+        add_table("t1_data_overview", "1. 数据大盘总览", old_json["1_data_overview"])
+        sections.append({
+            "id": "overview",
+            "title": "1. 数据大盘总览",
+            "blocks": [
+                {"type": "text", "text": ""},  # Day3 接 LLM 后填
+                {"type": "table_ref", "table_id": "t1_data_overview"}
+            ]
+        })
+
+    # 2. Benchmark
+    if "2_industry_benchmark" in old_json:
+        add_table("t2_industry_benchmark", "2. 行业 Benchmark 对比", old_json["2_industry_benchmark"])
+        sections.append({
+            "id": "benchmark",
+            "title": "2. 行业 Benchmark 对比",
+            "blocks": [
+                {"type": "table_ref", "table_id": "t2_industry_benchmark"},
+                {"type": "text", "text": ""}
+            ]
+        })
+
+    # 3. 受众分析（old_json['3_audience_analysis'] 是 dict）
+    aud = old_json.get("3_audience_analysis", {})
+    if isinstance(aud, dict) and aud:
+        mapping = {
+            "3.1 国家分析": "t3_country",
+            "3.2 性别分析": "t4_gender",
+            "3.3 年龄分析": "t5_age",
+            "3.4 受众组分析表": "t6_adset",
+            "3.5 受众类型分析": "t7_audience_type"
+        }
+        blocks = [{"type": "text", "text": ""}]
+        for sub_title, rows in aud.items():
+            table_id = mapping.get(sub_title, f"t3_{sub_title.replace(' ', '').replace('.', '_')}")
+            add_table(table_id, sub_title, rows)
+            blocks.append({"type": "table_ref", "table_id": table_id})
+            blocks.append({"type": "text", "text": ""})
+
+        sections.append({
+            "id": "audience",
+            "title": "3. 受众分析",
+            "blocks": blocks
+        })
+
+    # 4. 素材
+    if "4_creative_analysis" in old_json:
+        add_table("t8_creatives", "4. 素材分析", old_json["4_creative_analysis"])
+        sections.append({
+            "id": "creative",
+            "title": "4. 素材分析",
+            "blocks": [
+                {"type": "text", "text": ""},
+                {"type": "table_ref", "table_id": "t8_creatives"}
+            ]
+        })
+
+    # 5. 版位分析
+    placement = old_json.get("5_placement_analysis", {})
+    if isinstance(placement, dict) and placement:
+        if "top_spend" in placement:
+            add_table("t9_placement_top_spend", "5.1 版位花费 TOP 5", placement["top_spend"])
+        if "high_potential" in placement:
+            add_table("t10_placement_high_potential", "5.2 版位高潜力", placement["high_potential"])
+        sections.append({
+            "id": "placement",
+            "title": "5. 版位分析",
+            "blocks": [
+                {"type": "text", "text": ""},
+                {"type": "table_ref", "table_id": "t9_placement_top_spend"},
+                {"type": "table_ref", "table_id": "t10_placement_high_potential"},
+                {"type": "text", "text": ""}
+            ]
+        })
+
+    # 6. 落地页
+    if "6_landing_page_analysis" in old_json:
+        add_table("t11_landing_pages", "6. 落地页分析", old_json["6_landing_page_analysis"])
+        sections.append({
+            "id": "landing",
+            "title": "6. 落地页分析",
+            "blocks": [
+                {"type": "text", "text": ""},
+                {"type": "table_ref", "table_id": "t11_landing_pages"}
+            ]
+        })
+
+
+    return {
+        "report_meta": report_meta,
+        "tables": tables,
+        "report_plan": {"sections": sections}
+    }
+
+
 # ==========================================
 # PART 3: 主逻辑类
 # ==========================================
@@ -427,18 +708,35 @@ class AdReportProcessor:
 
                     col_order = ["date_range", "spend", "roas", "cpa", "cpm", "cpc", "ctr", "cvr_purchase",
                                  "rate_click_to_lp", "rate_lp_to_atc", "rate_ic_to_pur", "aov", "add_to_cart", "purchases", "purchase_value"]
-                    final_data = []
+                    final_data_raw = []
                     for label, r in zip(["整体数据", "前半周期", "后半周期", "环比"], [raw_overall, raw_prev, raw_curr, raw_mom]):
                         row = {"Label": label}
                         is_m = (label == "环比")
-                        for c in col_order: row[c] = format_cell(c, r.get(c, 0), is_mom=is_m)
-                        row['date_range'] = label
-                        final_data.append(row)
+                        for c in col_order:
+                            row[c] = r.get(c, 0.0)
+                        row["date_range"] = label
+                        final_data_raw.append(row)
 
-                    df_f = pd.DataFrame(final_data, columns=col_order)
-                    df_f_display = apply_report_labels(df_f)
-                    add_df_to_word(self.doc, df_f_display, "1. 数据大盘总览", level=1)
-                    self.final_json['1_data_overview'] = df_f_display.to_dict(orient='records')
+                    df_raw = pd.DataFrame(final_data_raw, columns=col_order)
+
+                    # Word 展示版本
+                    df_disp = df_raw.copy()
+                    for c in col_order:
+                        if c == "date_range":
+                            continue
+                        is_mom_row = (df_disp["date_range"] == "环比")
+                        df_disp.loc[~is_mom_row, c] = df_disp.loc[~is_mom_row, c].apply(
+                            lambda v: format_cell(c, v, is_mom=False)
+                        )
+                        df_disp.loc[is_mom_row, c] = df_disp.loc[is_mom_row, c].apply(
+                            lambda v: format_cell(c, v, is_mom=True)
+                        )
+
+                    df_disp = apply_report_labels(df_disp)
+                    add_df_to_word(self.doc, df_disp, "1. 数据大盘总览", level=1)
+
+                    self.final_json["1_data_overview"] = apply_report_labels(df_raw).to_dict(orient="records")
+
 
                     # 2. Benchmark
                     raw_current = calc_metrics_dict(df_clean)
@@ -493,8 +791,8 @@ class AdReportProcessor:
                         (df_curr.loc[mask_fix, 'cpc'] * 1000)
                     )
 
-            # ⭐ 关键点：这里把 CTR 转成「百分数数值」
-            df_curr['ctr'] = df_curr['ctr'].fillna(0) * 100
+            # ✅ 保持为比例 0~1
+            df_curr['ctr'] = df_curr['ctr'].fillna(0)
 
 
 
@@ -580,7 +878,7 @@ class AdReportProcessor:
                     if 'cpc' in df_curr.columns and 'cpm' in df_curr.columns:
                         mask_fix = (df_curr['ctr'].isna() | (df_curr['ctr'] == 0)) & (df_curr['cpc'] > 0)
                         if mask_fix.any(): df_curr.loc[mask_fix, 'ctr'] = df_curr.loc[mask_fix, 'cpm'] / (df_curr.loc[mask_fix, 'cpc'] * 1000)
-                    df_curr['ctr'] = df_curr['ctr'].fillna(0) * 100 
+                    df_curr['ctr'] = df_curr['ctr'].fillna(0)
 
                     req_cols = ["content_item", "spend", "ctr", "cpc", "cpm", "roas", "cpa"]
                     rename_map = {}; valid_cols = []
@@ -609,7 +907,7 @@ class AdReportProcessor:
                  if not find_column_fuzzy(df_curr, ['ctr']): df_curr['ctr'] = df_curr['clicks'] / df_curr['impressions'].replace(0, np.nan) if 'impressions' in df_curr else 0
                  if not find_column_fuzzy(df_curr, ['cpm']): df_curr['cpm'] = (df_curr['spend'] / df_curr['impressions'].replace(0, np.nan)) * 1000 if 'impressions' in df_curr else 0
                  if 'ctr' in df_curr.columns:
-                     df_curr['ctr'] = df_curr['ctr'].fillna(0) * 100
+                     df_curr['ctr'] = df_curr['ctr'].fillna(0)
                  req_cols = ['dimension_item', 'spend', 'ctr', 'cpc', 'cpm', 'roas', 'cpa']
                  rename_map = {}; valid_cols = []
                  for c in req_cols:
@@ -633,41 +931,6 @@ class AdReportProcessor:
                      "high_potential": apply_report_labels(df_pot, {'dimension_item': '版位'}).to_dict('records')
                  }
 
-        # 7. 架构诊断
-        rows = []
-        if "Master_Overview" in self.merged_dfs:
-             metrics = calc_metrics_dict(self.merged_dfs["Master_Overview"])
-             if not metrics: metrics = {} 
-             rows.append({
-                "模块": "预算结构", 
-                "当前结构数据表现": (
-                    f"总花费: ${float(str(metrics.get('spend', 0)).replace(',', '')):,.2f}\n"
-                    f"CPA: ${float(str(metrics.get('cpa', 0)).replace(',', '')):.2f}\n"
-                    f"ROAS: {float(str(metrics.get('roas', 0)).replace(',', '')):.2f}"
-                ), 
-                "存在的问题": ""
-             })
-        if "Master_Breakdown" in self.merged_dfs:
-            df_bd = self.merged_dfs["Master_Breakdown"]
-            mask = df_bd['Source_Sheet'].astype(str).apply(lambda x: any(k in x for k in ["受众", "Audience"]))
-            df_aud = df_bd[mask]
-            s_col = find_column_fuzzy(df_aud, ['spend']); active_count = len(df_aud[df_aud[s_col] > 0]) if s_col else 0
-            top_share = "0%"
-            if not df_aud.empty and s_col:
-                total_s = df_aud[s_col].sum()
-                if total_s > 0: top_share = f"{df_aud[s_col].max()/total_s:.1%}"
-            rows.append({"模块": "受众结构", "当前结构数据表现": f"活跃受众组数: {active_count}\nTop1 花费占比: {top_share}", "存在的问题": ""})
-        if "Master_Creative" in self.merged_dfs:
-             df_cr = self.merged_dfs["Master_Creative"]
-             mask = df_cr['Source_Sheet'].astype(str).apply(lambda x: any(k in x for k in ["素材", "Creative"]))
-             df_mat = df_cr[mask]
-             s_col = find_column_fuzzy(df_mat, ['spend']); active_count = len(df_mat[df_mat[s_col] > 0]) if s_col else 0
-             rows.append({"模块": "素材结构", "当前结构数据表现": f"活跃素材数: {active_count}", "存在的问题": ""})
-
-        df_struct = pd.DataFrame(rows)
-        add_df_to_word(self.doc, df_struct, "7. 广告架构分析", level=1)
-        if "Master_Overview" in self.merged_dfs:
-             self.final_json['7_structure_analysis'] = df_struct.to_dict(orient='records')
 
 # ==========================================
 # PART 4: Streamlit UI
@@ -864,6 +1127,17 @@ def main():
             
             st.balloons() 
             
+            # 构建 v2 JSON
+            v2_payload = build_tables_and_plan(processor.final_json)
+            v2_payload = json_safe(v2_payload)
+            
+            # ✅ 统一规范化：数值化 + 命名对齐
+            v2_payload = normalize_v2_payload(v2_payload)
+
+            # 👇 这里加预览
+            with st.expander("🔍 预览 v2 JSON（tables + report_plan）", expanded=False):
+                st.json(v2_payload)
+            
             st.markdown("### 📥 下载结果文件")
             
             with st.container(border=True):
@@ -884,7 +1158,8 @@ def main():
 
                 res_c1, res_c2, res_c3 = st.columns(3)
 
-                json_str = json.dumps(processor.final_json, indent=4, ensure_ascii=False)
+                json_str = json.dumps(v2_payload, indent=4, ensure_ascii=False)
+
                 res_c1.download_button(
                     "📥 JSON (大模型分析)", 
                     json_str, 
