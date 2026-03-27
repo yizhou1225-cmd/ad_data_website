@@ -13,22 +13,14 @@ import docx.opc.constants
 import time
 
 COMMON_METRICS = {
-    "spend": ["已花费金额 (USD)", "花费金额（USD）"],
-
-    "conversion": ["成效","潜在客户人数"],
-    "cpe": ["单次成效费用"],
-
+    "spend": ["已花费金额 (USD)", "花费金额（USD）","Amount spent"],
+    "message": ["消息对话发起次数","Messaging conversations started"],
+    "cpe": ["单次消息对话发起费用","Cost per messaging conversation started"],
+    "leads": ["leads","潜在客户人数"],
+    "cpl": ["单条潜在客户信息费用","Cost per leads"],
     "cpm": ["千次展示费用"],
     "cpc": ["单次链接点击费用","单次点击费用（全部）"],
-
-    "impressions": ["展示次数", "曝光"],
-
-    # ✅ 正确归类
     "ctr_all": ["点击率（全部）", "链接点击率（%）"],
-
-    # ✅ 新增（非常重要）
-    "reach": ["覆盖人数"],
-    "frequency": ["频次"],
 }
 SHEET_MAPPINGS = {
     "整体数据": {
@@ -80,12 +72,11 @@ SHEET_MAPPINGS = {
 
 FIELD_ALIASES = {
     "spend": ["spend", "amount spent", "花费"],
-    "conversion": ["成效", "results", "潜在客户人数"],
-
-    "impressions": ["impressions", "展示", "曝光"],
-
+    "message": ["消息对话发起次数","Messaging conversations started"],
+    "cpe": ["单次消息对话发起费用","Cost per messaging conversation started"],
+    "leads": ["leads","潜在客户人数"],
+    "cpl": ["单条潜在客户信息费用","Cost per leads"],
     "ctr_all": ["点击率（全部）", "ctr (all)"],
-
     "cpc": ["cpc", "单次链接点击费用","单次点击费用（全部）"],
     "cpm": ["cpm", "千次展示费用"],
     "cpe": ["cpe", "单次成效费用"],
@@ -109,9 +100,10 @@ GROUP_CONFIG = {
 # ✅ 👇 放这里（关键）
 REPORT_MAPPING = {
     "spend": "花费 ($)",
-    "conversion": "成效",
-    "cpe": "单次成效费用 ($)",
-    "impressions": "展现量",
+    "message":"消息对话发起次数",
+    "cpe": "单次消息对话发起费用 ($)",
+    "leads":"表单数",
+    "cpl": "单次表单收集费用 ($)",
     "ctr_all": "点击率 (All)",
     "cpm": "CPM",
     "cpc": "CPC",
@@ -227,8 +219,12 @@ def calc_metrics_dict(df_chunk):
     # ========================
     # 1️⃣ 只汇总“量”
     # ========================
-    for col in ['spend', 'clicks', 'impressions', 'conversion']:
-        found = find_column_fuzzy(df_chunk, FIELD_ALIASES.get(col, [col]))
+    for col in ['spend', 'leads', 'message']:
+        if col in df_chunk.columns:
+            found = col
+        else:
+            found = find_column_fuzzy(df_chunk, FIELD_ALIASES.get(col, [col]))
+
         if found:
             res[col] = df_chunk[found].apply(clean_numeric_strict).sum()
         else:
@@ -237,10 +233,13 @@ def calc_metrics_dict(df_chunk):
     # ========================
     # 2️⃣ 指标：直接用原字段（不计算）
     # ========================
-    for col in ['ctr', 'cpc', 'cpm', 'cpe']:
-        found = find_column_fuzzy(df_chunk, FIELD_ALIASES.get(col, [col]))
+    for col in ['ctr', 'cpc', 'cpm', 'cpe','cpl']:
+        if col in df_chunk.columns:
+            found = col
+        else:
+            found = find_column_fuzzy(df_chunk, FIELD_ALIASES.get(col, [col]))
+
         if found:
-            # 👉 用平均（或者你也可以用 .iloc[0]）
             res[col] = df_chunk[found].apply(clean_numeric_strict).mean()
         else:
             res[col] = 0.0
@@ -457,16 +456,10 @@ class AdReportProcessor:
                 final_cols = {}
 
                 for std_col, raw_col_options in mapping.items():
-                    print(f"\n🧠 正在匹配字段: {std_col}")
-                    print(f"候选字段: {raw_col_options}")
-                    print(f"当前Excel列: {df.columns.tolist()}")
                     matched_col = find_column_fuzzy(df, raw_col_options)
                     
                     if matched_col:
-                        print(f"✅ 匹配成功: {std_col} -> {matched_col}")
                         final_cols[std_col] = matched_col
-                    else:
-                        print(f"❌ 匹配失败: {std_col}")
 
                 if not final_cols:
                     st.warning(f"⚠️ 文件已识别但没有匹配到有效字段：{file.name}")
@@ -477,8 +470,10 @@ class AdReportProcessor:
                 df_clean = df[unique_cols].rename(
                     columns={v: k for k, v in final_cols.items()}
                 )
-                print(f"\n📦 清洗后字段（{matched_sheet}）:")
-                print(df_clean.columns.tolist())
+                # ✅ 👉 就放这里（ETL刚完成，最干净）
+                if 'message' in df_clean.columns or 'cpl' in df_clean.columns:
+                    print("🧪 ETL后数据检查:")
+                    print(df_clean[['cpc']].head(10))      
 
                 # 再去重 rename 后列
                 df_clean = df_clean.loc[:, ~df_clean.columns.duplicated()]
@@ -494,13 +489,6 @@ class AdReportProcessor:
                     if col not in text_cols:
                         df_clean[col] = df_clean[col].apply(clean_numeric)
                 
-                # ✅ 自动补CPE（只在缺失时）
-                if "cpe" not in df_clean.columns:
-                    if "spend" in df_clean.columns and "conversion" in df_clean.columns:
-                        print(f"⚙️ 自动计算 cpe（{matched_sheet}）")
-                        df_clean["cpe"] = (
-                            df_clean["spend"] / df_clean["conversion"].replace(0, None)
-                        )
 
                 # ✅ ✅ ✅ 就放在这里（非常关键）
                 if "dimension_item" in df_clean.columns:
@@ -590,9 +578,6 @@ class AdReportProcessor:
                         df_prev = df_clean[df_clean['temp_date'] < mid_date]
                         df_curr = df_clean[df_clean['temp_date'] >= mid_date]
 
-                        # 👉 debug（建议保留一轮）
-                        print("前半周期行数:", len(df_prev))
-                        print("后半周期行数:", len(df_curr))
 
                         raw_prev = calc_metrics_dict(df_prev)
                         raw_curr = calc_metrics_dict(df_curr)
@@ -623,7 +608,7 @@ class AdReportProcessor:
         # 输出结构
         # =========================
 
-                    col_order = ["date_range", "spend", "cpe", "cpm", "cpc", "ctr"]
+                    col_order = ["date_range", "spend", "message","cpe","leads","cpl", "cpm", "cpc", "ctr"]
                     final_data = []
                     for label, r in zip(["整体数据", "前半周期", "后半周期", "环比"], [raw_overall, raw_prev, raw_curr, raw_mom]):
                         row = {"Label": label}
@@ -670,20 +655,12 @@ class AdReportProcessor:
         self.final_json['3_audience_analysis'] = {}
 
         def resolve_std_col(df, std_col):
-            print(f"\n🔍 resolve_std_col: 正在找 {std_col}")
-            print("当前列:", df.columns.tolist())
 
             if std_col in df.columns:
-                print(f"✅ 直接命中: {std_col}")
                 return std_col
 
             aliases = FIELD_ALIASES.get(std_col, [std_col])
             col = find_column_fuzzy(df, aliases)
-
-            if col:
-                print(f"✅ 模糊匹配成功: {std_col} -> {col}")
-            else:
-                print(f"❌ 匹配失败: {std_col}")
 
             return col
             aliases = FIELD_ALIASES.get(std_col, [std_col])
@@ -700,7 +677,7 @@ class AdReportProcessor:
                 col = resolve_std_col(df_curr, metric)
                 df_curr[metric] = df_curr[col] if col else np.nan
 
-            req_cols = ["dimension_item", "spend", "conversion", "cpe", "ctr", "cpc", "cpm"]
+            req_cols = ["dimension_item", "spend", "message","cpe","leads","cpl", "ctr", "cpc", "cpm"]
 
             if include_converting:
                 req_cols += [
@@ -721,12 +698,9 @@ class AdReportProcessor:
                     valid_cols.append(found)
                     if found != req:
                         rename_map[found] = req
-                else:
-                    default_val = "-" if ("converting" in req or req == "custom_audience_settings") else np.nan
-                    df_curr[req] = default_val
-                    valid_cols.append(req)
 
             df_final = df_curr[valid_cols].rename(columns=rename_map)
+            df_final = df_final.dropna(axis=1, how='all')
 
             for t_col in [
                 "custom_audience_settings",
@@ -783,11 +757,18 @@ class AdReportProcessor:
                 df_curr = df_curr.copy()
                 df_curr.columns = df_curr.columns.astype(str)
 
+                # ✅ 👉 加在这里（关键）
+                print("真实列名:", list(df_curr.columns))
+                print("cpc是否存在:", 'cpc' in df_curr.columns)
+                
                 for metric in ['ctr', 'cpc', 'cpm']:
                     col = resolve_std_col(df_curr, metric)
-                    df_curr[metric] = df_curr[col] if col else np.nan
+                    if col:
+                        df_curr[metric] = df_curr[col]
+                    elif metric not in df_curr.columns:
+                        df_curr[metric] = np.nan
 
-                req_cols = ["content_item", "spend", "conversion", "cpe", "ctr", "cpc", "cpm"]
+                req_cols = ["content_item", "spend", "message","cpe","leads", "cpl", "ctr", "cpc", "cpm"]
 
                 rename_map = {}
                 valid_cols = []
@@ -799,9 +780,6 @@ class AdReportProcessor:
                         valid_cols.append(found)
                         if found != req:
                             rename_map[found] = req
-                    else:
-                        df_curr[req] = np.nan
-                        valid_cols.append(req)
 
                 df_final = df_curr[valid_cols].rename(columns=rename_map)
 
@@ -830,7 +808,7 @@ class AdReportProcessor:
                     col = resolve_std_col(df_curr, metric)
                     df_curr[metric] = df_curr[col] if col else np.nan
 
-                req_cols = ['dimension_item', "spend", "conversion", "cpe", "ctr", "cpc", "cpm"]
+                req_cols = ['dimension_item', "spend", "message", "cpe","leads","cpl", "ctr", "cpc", "cpm"]
 
                 rename_map = {}
                 valid_cols = []
